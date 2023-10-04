@@ -1,0 +1,250 @@
+function(ReadVCPKGConfigurationFile variable_name)
+	file(READ ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/packages.json file_str)
+
+	if(NOT DEFINED file_str OR ${file_str} EQUAL "")
+		message(FATAL_ERROR "Packages list not found.")
+	endif()
+
+	set(${variable_name} ${file_str} PARENT_SCOPE)
+endfunction()
+
+function(ConfigurePlatform json_file platform_name packages_list_var_name)
+	string(JSON _arr_len LENGTH ${json_file})
+
+	set(_platform_string "")
+	set(_package_strings "")
+
+	if(${platform_name} STREQUAL "Windows")
+		# Currently no required
+	elseif(${platform_name} STREQUAL "Linux")
+		message(STATUS "Updating APT...")
+
+		execute_process(
+			COMMAND sudo apt update
+		)
+
+		message(STATUS "Upgrading APT packages...")
+
+		execute_process(
+			COMMAND sudo apt upgrade
+		)
+
+		foreach(i RANGE 0 ${_arr_len})
+			string(JSON _platform_description GET ${json_file} ${i})
+			string(JSON _name GET ${_platform_description} platform)
+
+			if(${_name} STREQUAL ${platform_name})
+				message(STATUS "Configuring platform specific dependencies for ${_name}...")
+
+				string(JSON _apt_required_packages GET ${json_file} apt-packages)
+
+				foreach(_package_name ${_apt_required_packages})
+					execute_process(
+						COMMAND sudo apt install ${_package_name}
+					)
+				endforeach()
+
+				set(_platform_string ${_platform_description})
+			endif()
+		endforeach()
+	elseif(${platform_name} STREQUAL "Darwin")
+		# implement support for HomeBrew packages
+	else()
+		message(FATAL_ERROR "Configure VCPKG: Unsupported platform.")
+	endif()
+
+	string(JSON _packages_prop_type ERROR_VARIABLE _err TYPE ${_platform_string} packages)
+				if(NOT _packages_prop_type STREQUAL "ARRAY")
+					continue()
+				endif()
+
+				string(JSON _packages_str GET ${_platform_description} packages)
+
+				string(JSON _packages_len LENGTH ${_packages_str})
+
+				foreach(j RANGE 0 ${_packages_len})
+					string(JSON _package_description GET ${_packages_str} ${j})
+
+					string(JSON _package_name GET ${_package_description} "name")
+					string(JSON _package_version GET ${_package_description} "version")
+
+					list(APPEND _package_strings "${_package_name} -v ${_package_version}")
+				endforeach()
+
+	foreach(i RANGE 0 ${_arr_len})
+			string(JSON _platform_description GET ${json_file} ${i})
+			string(JSON _name GET ${_platform_description} platform)
+
+			if(${_name} STREQUAL "all")
+				string(JSON _packages_prop_type ERROR_VARIABLE _err TYPE ${_platform_description} packages)
+				if(NOT _packages_prop_type STREQUAL "ARRAY")
+					continue()
+				endif()
+
+				string(JSON _packages_str GET ${_platform_description} packages)
+
+				string(JSON _packages_len LENGTH ${_packages_str})
+
+				foreach(j RANGE 0 ${_packages_len})
+					string(JSON _package_description GET ${_packages_str} ${j})
+
+					string(JSON _package_name GET ${_package_description} "name")
+					string(JSON _package_version GET ${_package_description} "version")
+
+					list(APPEND _package_strings "${_package_name} -v ${_package_version}")
+				endforeach()
+			endif()
+		endforeach()
+
+	# return list of packages from json to var
+	set(${packages_list_var_name} ${_package_strings} PARENT_SCOPE)
+endfunction()
+
+function(GetVCPKGPath variable_name)
+	find_program(VCPKG NAMES vcpkg)
+
+	if(NOT EXISTS ${VCPKG})
+		message(FATAL_ERROR "VCPKG not found. Set valid path to PATH system environment variable.")
+	endif()
+
+	set(${variable_name} ${VCPKG} PARENT_SCOPE)
+endfunction()
+
+function(DetectPlatformAndTripletName platform_var triplet_var)
+	if(${CMAKE_SYSTEM_NAME} STREQUAL "Windows")
+		if(CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x86_64" OR CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "AMD64" OR CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x64")
+			set(triplet "x64-windows")
+		elseif(CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "i686")
+			set(triplet "x86-windows")
+		elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+			set(triplet "arm64-windows")
+		else()
+			message(FATAL_ERROR "Unsupported architecture '${CMAKE_HOST_SYSTEM_PROCESSOR}'.")
+		endif()
+	elseif(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
+		if(CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x86_64" OR CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "AMD64" OR CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x64")
+			set(triplet "x64-linux")
+		elseif(CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "i686")
+			set(triplet "x86-linux")
+		elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+			set(triplet "arm64-linux")
+		else()
+			message(FATAL_ERROR "Unsupported architecture '${CMAKE_HOST_SYSTEM_PROCESSOR}'.")
+		endif()
+	elseif(${CMAKE_SYSTEM_NAME} STREQUAL "Darwin")
+		set(triplet "x64-osx")
+
+		#TODO implement support for Apple M1, M2 - arm64-osx
+	else()
+		message(FATAL_ERROR "Unsupported OS.")
+	endif()
+
+	set(${platform_var} ${CMAKE_SYSTEM_NAME} PARENT_SCOPE)
+	set(${triplet_var} ${triplet} PARENT_SCOPE)
+endfunction()
+
+function(Build_VCPKG vcpkg_libraries)
+	list(LENGTH vcpkg_libraries list_length)
+
+	if(list_length EQUAL 0)
+		message(FATAL_ERROR "Variable must be a non-empty list.")
+	endif()
+
+	find_program(Git NAMES git)
+
+	message("Detected current list dir: '${CMAKE_CURRENT_LIST_DIR}'.")
+
+	set(vcpkg_dir "${CMAKE_CURRENT_LIST_DIR}/out/build/vcpkg")
+
+	if(EXISTS ${vcpkg_dir})
+		message(STATUS "Updating VCPKG...")
+
+		execute_process(
+			WORKING_DIRECTORY ${vcpkg_dir}
+			COMMAND ${Git} pull --progress
+		)
+	else()
+		message(STATUS "Downloading VCPKG...")
+
+		execute_process(
+			WORKING_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}/out/build"
+			COMMAND ${Git} clone --progress "https://github.com/microsoft/vcpkg.git"
+			RESULT_VARIABLE result_process
+		)
+
+		if(NOT ${result_process} EQUAL "0")
+			message(FATAL_ERROR "Error while downloading VCPKG from Github.")
+		endif()
+
+		if(DEFINED WIN32)
+			if(${CMAKE_CXX_COMPILER_ID} STREQUAL MSVC)
+				set(VCPKG_START ${vcpkg_dir}/bootstrap-vcpkg.bat)
+			else()
+				message(FATAL_ERROR "Compiler must be a MSVC on Win32 platform.\nCurrently is '${CMAKE_CXX_COMPILER_ID}'.")
+			endif()
+		else()
+			set(VCPKG_START ${vcpkg_dir}/bootstrap-vcpkg.sh)
+		endif()
+
+		message(STATUS "Installing VCPKG...")
+
+		execute_process(
+			COMMAND ${VCPKG_START}
+			RESULT_VARIABLE result_process
+		)
+
+		if(NOT ${result_process} EQUAL "0")
+			message(FATAL_ERROR "Error while executing VCPKG install script.")
+		endif()
+	endif()
+
+	execute_process(
+		WORKING_DIRECTORY ${vcpkg_dir}
+		COMMAND ./vcpkg update
+	)
+
+	foreach(package_str ${${vcpkg_libraries}})
+		message(STATUS "vcpkg: Installing '${package_name}'...")
+
+		execute_process(
+			WORKING_DIRECTORY ${vcpkg_dir}
+			COMMAND ./vcpkg install ${package_name} --triplet=${triplet}
+			RESULT_VARIABLE result_process
+		)
+
+		if(NOT ${result_process} EQUAL "0")
+			message(FATAL_ERROR "Error while installing vcpkg - ${package_name}.")
+		endif()
+	endforeach()
+
+	set(triplet ${triplet} CACHE STRING "")
+endfunction()
+
+function(ConfigureVCPKG)
+	GetVCPKGPath(vcpkg_app)
+	get_filename_component(vcpkg_dir ${vcpkg_app} DIRECTORY)
+
+	message(STATUS "Found VCPKG: ${vcpkg_app}")
+
+	find_program(git NAMES git)
+
+	message(STATUS "Updating VCPKG...")
+
+	execute_process(
+		WORKING_DIRECTORY ${vcpkg_dir}
+		COMMAND git pull -r
+	)
+
+	execute_process(COMMAND ${vcpkg_app} update)
+
+	message(STATUS "Reading packages.json...")
+	ReadVCPKGConfigurationFile(packages_json)
+
+	DetectPlatformAndTripletName(platform_name triplet)
+	message("Detected platform: ${platform_name} - ${triplet}")
+
+	message(STATUS "Configuring platform...")
+	ConfigurePlatform(${packages_json} ${platform_name} packages)
+
+	BUILD_VCPKG(${packages})
+endfunction()
